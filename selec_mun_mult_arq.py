@@ -367,6 +367,9 @@ class App:
 
     def update_municipios(self, event=None):
         selected_uf = self.uf_var.get()
+        if not selected_uf:
+            return
+            
         municipios_filtrados = self.df_municipios[self.df_municipios['UF'] == selected_uf]
         lista_formatada = [row['Nome Municipio'] for _, row in municipios_filtrados.iterrows()]
         
@@ -375,14 +378,21 @@ class App:
         self.municipio_combo.config(state="readonly")
 
     def incluir_municipio(self):
+        uf_selecionada = self.uf_var.get()
         municipio_selecionado = self.municipio_var.get()
-        if not municipio_selecionado:
-            messagebox.showwarning("Atenção", "Selecione um município no campo '2' primeiro.")
+        
+        if not uf_selecionada or not municipio_selecionado:
+            messagebox.showwarning("Atenção", "Selecione uma UF e um município primeiro.")
             return
-        if municipio_selecionado in self.lista_municipios.get(0, tk.END):
-            messagebox.showwarning("Atenção", f"O município '{municipio_selecionado}' já está na lista.")
+            
+        # Formata a entrada para identificar de qual UF vem o município
+        item_formatado = f"{uf_selecionada} - {municipio_selecionado}"
+        
+        if item_formatado in self.lista_municipios.get(0, tk.END):
+            messagebox.showwarning("Atenção", f"O município '{municipio_selecionado}' ({uf_selecionada}) já está na lista.")
             return
-        self.lista_municipios.insert(tk.END, municipio_selecionado)
+            
+        self.lista_municipios.insert(tk.END, item_formatado)
         self.municipio_combo.set("")
 
     def excluir_ultimo_municipio(self):
@@ -400,172 +410,176 @@ class App:
             messagebox.showerror("Erro", "Por favor, inclua pelo menos um município na lista '3' para filtrar.")
             return
             
-        uf_selecionada = self.uf_var.get()
-        if not uf_selecionada:
-            messagebox.showerror("Erro", "Por favor, selecione a UF no passo '1'.")
-            return
-        
+        ufs_envolvidas = set()
         municipios_alvo = {}
-        for nome in itens_selecionados:
-            codigo_completo = self.municipios_map.get((uf_selecionada, nome))
-            if codigo_completo:
-                codigo_limpo = re.sub(r'\D', '', str(codigo_completo))
-                municipios_alvo[codigo_limpo] = nome.strip()
         
+        # Desempacota a UF e o Nome da cidade selecionados
+        for item in itens_selecionados:
+            try:
+                uf, nome = item.split(" - ", 1)
+                ufs_envolvidas.add(uf)
+                codigo_completo = self.municipios_map.get((uf, nome))
+                if codigo_completo:
+                    codigo_limpo = re.sub(r'\D', '', str(codigo_completo))
+                    municipios_alvo[codigo_limpo] = nome.strip()
+            except ValueError:
+                continue
+        
+        if not ufs_envolvidas or not municipios_alvo:
+            messagebox.showerror("Erro", "Não foi possível mapear os códigos IBGE dos municípios selecionados.")
+            return
+            
         cnae_codigos_limpos = list(CNAE_MAP.values())
 
         self.start_button.config(state="disabled")
         self.root.config(cursor="watch")
         
-        # Inicia a thread híbrida
-        filter_thread = threading.Thread(target=self.run_process_hibrido, args=(uf_selecionada, municipios_alvo, cnae_codigos_limpos))
+        # Inicia a thread híbrida passando o conjunto de UFs e os alvos
+        filter_thread = threading.Thread(target=self.run_process_hibrido, args=(ufs_envolvidas, municipios_alvo, cnae_codigos_limpos))
         filter_thread.daemon = True
         filter_thread.start()
 
-    def run_process_hibrido(self, uf_selecionada, municipios_alvo, cnae_codigos_limpos):
+    def run_process_hibrido(self, ufs_envolvidas, municipios_alvo, cnae_codigos_limpos):
         try:
             municipios_dfs = {codigo_alvo: [] for codigo_alvo in municipios_alvo.keys()}
 
-            nome_arquivo = MAPA_ARQUIVOS_UF.get(uf_selecionada)
-            if not nome_arquivo:
-                raise ValueError(f"UF '{uf_selecionada}' não possui um ficheiro mapeado nas configurações.")
+            # Identifica quais arquivos base precisam ser lidos com base nas UFs
+            arquivos_alvo_nomes = set()
+            for uf in ufs_envolvidas:
+                nome_arquivo = MAPA_ARQUIVOS_UF.get(uf)
+                if nome_arquivo:
+                    arquivos_alvo_nomes.add(nome_arquivo)
+                else:
+                    raise ValueError(f"UF '{uf}' não possui um ficheiro mapeado nas configurações.")
 
-            arquivo_entrada = os.path.join(PASTA_DADOS, nome_arquivo)
-            if not os.path.exists(arquivo_entrada):
-                raise FileNotFoundError(f"Ficheiro não encontrado: {arquivo_entrada}")
+            # Gera uma string representativa das UFs para nomear os arquivos de saída
+            lista_ufs_ordenada = sorted(list(ufs_envolvidas))
+            ufs_str = "_".join(lista_ufs_ordenada)
+            if len(ufs_str) > 15: # Evita nomes gigantescos se o usuário selecionar todo o Brasil
+                ufs_str = "Multiplas_UFs"
 
-            # Identifica o separador na primeira linha
-            with open(arquivo_entrada, 'r', encoding=CODIFICACAO) as f:
-                primeira_linha = f.readline()
-                separador_real = ';' if ';' in primeira_linha else ','
-                # Extrai os nomes das colunas exatamente como estão no cabeçalho
-                colunas_brutas = primeira_linha.strip().split(separador_real)
-                colunas_nomes = [c.replace('"', '').strip() for c in colunas_brutas]
-
-            self.atualizar_status(f"A ler {arquivo_entrada} via PyArrow/C++...")
-
-            # 1. LEITURA ULTRA-RÁPIDA (PyArrow Engine) COM ZERO-COPY PARA POLARS
-            tipos_pyarrow = {col: pa.string() for col in colunas_nomes}
-            
-            read_options = pa_csv.ReadOptions(
-                encoding=CODIFICACAO, # PyArrow suporta latin-1 nativamente e em paralelo
-                column_names=colunas_nomes,
-                skip_rows=1, # Pula o cabeçalho original
-                block_size=TAMANHO_BLOCO
-            )
-            parse_options = pa_csv.ParseOptions(delimiter=separador_real, quote_char='"')
-            convert_options = pa_csv.ConvertOptions(column_types=tipos_pyarrow)
-
-            try:
-                reader = pa_csv.open_csv(
-                    arquivo_entrada,
-                    read_options=read_options,
-                    parse_options=parse_options,
-                    convert_options=convert_options
-                )
-            except Exception as e:
-                raise ValueError(f"Erro ao inicializar o motor PyArrow: {e}")
-
-            # --- INICIALIZAÇÃO DO LOG ---
-            log_filename = os.path.join(PASTA_SAIDA, f"log_filtros_{uf_selecionada}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+            # --- INICIALIZAÇÃO DO LOG UNIFICADO ---
+            log_filename = os.path.join(PASTA_SAIDA, f"log_filtros_{ufs_str}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
             
             with open(log_filename, 'w', encoding='utf-8') as log_f:
                 log_f.write("=== REGISTO DE DEPURAÇÃO (ALTA PERFORMANCE: PyArrow + Polars Zero-Copy) ===\n")
                 log_f.write(f"Data/Hora: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                log_f.write(f"Ficheiro Lido: {arquivo_entrada}\n")
+                log_f.write(f"UFs Envolvidas: {', '.join(lista_ufs_ordenada)}\n")
+                log_f.write(f"Total de Arquivos a processar: {len(arquivos_alvo_nomes)}\n")
                 log_f.write(f"\n--- O QUE ESTAMOS A PROCURAR ---\n")
-                log_f.write(f"Municípios Alvo: {list(municipios_alvo.keys())}\n")
+                log_f.write(f"Municípios Alvo ({len(municipios_alvo)} itens): {list(municipios_alvo.keys())}\n")
                 log_f.write(f"CNAEs Alvo ({len(cnae_codigos_limpos)} itens): {cnae_codigos_limpos}\n")
                 log_f.write("=========================================\n\n")
 
-                for i, batch in enumerate(reader):
-                    self.atualizar_status(f"A analisar Bloco {i+1} (Extração Zero-Copy)...")
+                total_geral_linhas_lidas = 0
+                total_geral_linhas_salvas = 0
+
+                # Itera sobre todos os arquivos necessários para cobrir as UFs solicitadas
+                for index_arq, nome_arquivo in enumerate(arquivos_alvo_nomes, 1):
+                    arquivo_entrada = os.path.join(PASTA_DADOS, nome_arquivo)
+                    if not os.path.exists(arquivo_entrada):
+                        raise FileNotFoundError(f"Ficheiro não encontrado: {arquivo_entrada}")
+
+                    # Identifica o separador na primeira linha
+                    with open(arquivo_entrada, 'r', encoding=CODIFICACAO) as f:
+                        primeira_linha = f.readline()
+                        separador_real = ';' if ';' in primeira_linha else ','
+                        colunas_brutas = primeira_linha.strip().split(separador_real)
+                        colunas_nomes = [c.replace('"', '').strip() for c in colunas_brutas]
+
+                    self.atualizar_status(f"[{index_arq}/{len(arquivos_alvo_nomes)}] A preparar motor PyArrow para: {nome_arquivo}")
+                    log_f.write(f"\n>>>>> INICIANDO PROCESSAMENTO DO ARQUIVO: {nome_arquivo} <<<<<\n\n")
+
+                    tipos_pyarrow = {col: pa.string() for col in colunas_nomes}
                     
-                    # Transformação Instantânea: Memória PyArrow C++ -> Polars Rust sem cópia de dados (O(1))
-                    df_pl = pl.from_arrow(batch)
-                    linhas_neste_bloco = len(df_pl)
-                    
-                    if i == 0:
-                        colunas_necessarias = [COLUNA_MUNICIPIO, COLUNA_MUNICIPIO_TRAB, COLUNA_CNAE_SUBCLASSE, COLUNA_FILTRO_VINCULO, COLUNA_REMUNERACAO, COLUNA_GENERO, COLUNA_RACA]
-                        colunas_ausentes = [c for c in colunas_necessarias if c not in df_pl.columns]
-                        if colunas_ausentes:
-                            raise ValueError(f"Faltam colunas obrigatórias no ficheiro:\n{colunas_ausentes}")
+                    read_options = pa_csv.ReadOptions(encoding=CODIFICACAO, column_names=colunas_nomes, skip_rows=1, block_size=TAMANHO_BLOCO)
+                    parse_options = pa_csv.ParseOptions(delimiter=separador_real, quote_char='"')
+                    convert_options = pa_csv.ConvertOptions(column_types=tipos_pyarrow)
 
-                    # 2. ACELERAÇÃO DA LIMPEZA E DOS FILTROS USANDO POLARS
-                    expr_mun_1 = pl.col(COLUNA_MUNICIPIO).cast(pl.String).str.replace_all(r"\D", "")
-                    expr_mun_2 = pl.col(COLUNA_MUNICIPIO_TRAB).cast(pl.String).str.replace_all(r"\D", "")
-                    expr_vinc = pl.col(COLUNA_FILTRO_VINCULO).cast(pl.String).str.replace_all('"', '').str.strip_chars().str.to_uppercase()
-                    expr_cnae = pl.col(COLUNA_CNAE_SUBCLASSE).cast(pl.String).str.replace_all(r"\D", "")
+                    try:
+                        reader = pa_csv.open_csv(arquivo_entrada, read_options=read_options, parse_options=parse_options, convert_options=convert_options)
+                    except Exception as e:
+                        raise ValueError(f"Erro ao inicializar o motor PyArrow para {nome_arquivo}: {e}")
 
-                    # Limpa as colunas base
-                    df_pl = df_pl.with_columns(
-                        expr_mun_1.alias("Mun_Limpo_1"),
-                        expr_mun_2.alias("Mun_Limpo_2"),
-                        expr_vinc.alias("Vinculo_Filtro"),
-                        expr_cnae.str.slice(0, 5).alias("CNAE_Filtro")
-                    )
-
-                    # Lógica de Fallback de Município
-                    df_pl = df_pl.with_columns(
-                        pl.when(pl.col("Mun_Limpo_1").is_in(list(municipios_alvo.keys())))
-                        .then(pl.col("Mun_Limpo_1"))
-                        .otherwise(pl.col("Mun_Limpo_2"))
-                        .alias("Mun_Filtro")
-                    )
-
-                    # Criação e Soma das Máscaras para o Arquivo de Log Exato
-                    df_pl = df_pl.with_columns(
-                        pl.col("Mun_Limpo_1").is_in(list(municipios_alvo.keys())).alias("pass_mun_1"),
-                        pl.col("Mun_Limpo_2").is_in(list(municipios_alvo.keys())).alias("pass_mun_2"),
-                        pl.col("CNAE_Filtro").is_in(cnae_codigos_limpos).alias("pass_cnae"),
-                        pl.col("Vinculo_Filtro").is_in(['1', '01', 'SIM', 'S']).alias("pass_vinc")
-                    ).with_columns(
-                        (pl.col("pass_mun_1") | pl.col("pass_mun_2")).alias("pass_mun_total")
-                    ).with_columns(
-                        (pl.col("pass_mun_total") & pl.col("pass_cnae") & pl.col("pass_vinc")).alias("pass_final")
-                    )
-
-                    # Extrai os totais para o Log
-                    total_mun_1 = df_pl["pass_mun_1"].sum()
-                    total_mun_2 = df_pl["pass_mun_2"].sum()
-                    total_mun_total = df_pl["pass_mun_total"].sum()
-                    total_cnae = df_pl["pass_cnae"].sum()
-                    total_vinc = df_pl["pass_vinc"].sum()
-                    total_all = df_pl["pass_final"].sum()
-
-                    log_f.write(f"--- BLOCO {i+1} ---\n")
-                    log_f.write(f"Total de linhas processadas: {linhas_neste_bloco:,}\n")
-                    log_f.write(f"  > Passaram no filtro Município (Sede):     {total_mun_1:,}\n")
-                    log_f.write(f"  > Passaram no filtro Município (Trabalho): {total_mun_2:,}\n")
-                    log_f.write(f"  > Total Único passando no filtro Mun:      {total_mun_total:,}\n")
-                    log_f.write(f"  > Passaram no filtro CNAE:                 {total_cnae:,}\n")
-                    log_f.write(f"  > Passaram no filtro Vínculo:              {total_vinc:,}\n")
-                    log_f.write(f"  > VÍNCULOS GUARDADOS (Cruzamento):         {total_all:,}\n")
-
-                    if i == 0:
-                        log_f.write("\n[AMOSTRA DE COMO O POLARS LIMPOU OS DADOS NO PRIMEIRO BLOCO]\n")
-                        amostra = df_pl.head(10).to_pandas()
-                        log_f.write("Amostra Municípios (Lido Sede | Lido Trab -> Como o filtro converte):\n")
-                        for _, r in amostra.iterrows():
-                            log_f.write(f"  {r.get(COLUNA_MUNICIPIO, '')} | {r.get(COLUNA_MUNICIPIO_TRAB, '')} ---> Filtro Final: {r.get('Mun_Filtro', '')}\n")
-                        log_f.write("-" * 50 + "\n\n")
-
-                    # Aplica o filtro final e limpa colunas auxiliares
-                    df_filtrado_pl = df_pl.filter(pl.col("pass_final"))
-                    cols_to_drop = ['pass_mun_1', 'pass_mun_2', 'pass_cnae', 'pass_vinc', 'pass_mun_total', 'pass_final']
-                    df_filtrado_pl = df_filtrado_pl.drop(cols_to_drop)
-
-                    if len(df_filtrado_pl) > 0:
-                        # 3. Retorna para o Pandas para agrupar e salvar (apenas com as linhas que passaram no filtro)
-                        resultado_bloco = df_filtrado_pl.to_pandas()
-                        resultado_bloco[COLUNA_CNAE_CLASSE] = resultado_bloco['CNAE_Filtro']
+                    for i, batch in enumerate(reader):
+                        self.atualizar_status(f"[{index_arq}/{len(arquivos_alvo_nomes)}] {nome_arquivo} -> A analisar Bloco {i+1}...")
                         
-                        grouped = resultado_bloco.groupby('Mun_Filtro')
-                        for codigo_encontrado, grupo_df in grouped:
-                            if codigo_encontrado in municipios_dfs:
-                                municipios_dfs[codigo_encontrado].append(grupo_df)
+                        df_pl = pl.from_arrow(batch)
+                        linhas_neste_bloco = len(df_pl)
+                        total_geral_linhas_lidas += linhas_neste_bloco
+                        
+                        if i == 0:
+                            colunas_necessarias = [COLUNA_MUNICIPIO, COLUNA_MUNICIPIO_TRAB, COLUNA_CNAE_SUBCLASSE, COLUNA_FILTRO_VINCULO, COLUNA_REMUNERACAO, COLUNA_GENERO, COLUNA_RACA]
+                            colunas_ausentes = [c for c in colunas_necessarias if c not in df_pl.columns]
+                            if colunas_ausentes:
+                                raise ValueError(f"Faltam colunas obrigatórias no ficheiro {nome_arquivo}:\n{colunas_ausentes}")
 
-            self.atualizar_status("Extração concluída. A preparar relatórios em Excel...")
+                        expr_mun_1 = pl.col(COLUNA_MUNICIPIO).cast(pl.String).str.replace_all(r"\D", "")
+                        expr_mun_2 = pl.col(COLUNA_MUNICIPIO_TRAB).cast(pl.String).str.replace_all(r"\D", "")
+                        expr_vinc = pl.col(COLUNA_FILTRO_VINCULO).cast(pl.String).str.replace_all('"', '').str.strip_chars().str.to_uppercase()
+                        expr_cnae = pl.col(COLUNA_CNAE_SUBCLASSE).cast(pl.String).str.replace_all(r"\D", "")
+
+                        df_pl = df_pl.with_columns(
+                            expr_mun_1.alias("Mun_Limpo_1"),
+                            expr_mun_2.alias("Mun_Limpo_2"),
+                            expr_vinc.alias("Vinculo_Filtro"),
+                            expr_cnae.str.slice(0, 5).alias("CNAE_Filtro")
+                        )
+
+                        df_pl = df_pl.with_columns(
+                            pl.when(pl.col("Mun_Limpo_1").is_in(list(municipios_alvo.keys())))
+                            .then(pl.col("Mun_Limpo_1"))
+                            .otherwise(pl.col("Mun_Limpo_2"))
+                            .alias("Mun_Filtro")
+                        )
+
+                        df_pl = df_pl.with_columns(
+                            pl.col("Mun_Limpo_1").is_in(list(municipios_alvo.keys())).alias("pass_mun_1"),
+                            pl.col("Mun_Limpo_2").is_in(list(municipios_alvo.keys())).alias("pass_mun_2"),
+                            pl.col("CNAE_Filtro").is_in(cnae_codigos_limpos).alias("pass_cnae"),
+                            pl.col("Vinculo_Filtro").is_in(['1', '01', 'SIM', 'S']).alias("pass_vinc")
+                        ).with_columns(
+                            (pl.col("pass_mun_1") | pl.col("pass_mun_2")).alias("pass_mun_total")
+                        ).with_columns(
+                            (pl.col("pass_mun_total") & pl.col("pass_cnae") & pl.col("pass_vinc")).alias("pass_final")
+                        )
+
+                        total_mun_1 = df_pl["pass_mun_1"].sum()
+                        total_mun_2 = df_pl["pass_mun_2"].sum()
+                        total_mun_total = df_pl["pass_mun_total"].sum()
+                        total_cnae = df_pl["pass_cnae"].sum()
+                        total_vinc = df_pl["pass_vinc"].sum()
+                        total_all = df_pl["pass_final"].sum()
+                        
+                        total_geral_linhas_salvas += total_all
+
+                        log_f.write(f"--- BLOCO {i+1} ---\n")
+                        log_f.write(f"Linhas processadas: {linhas_neste_bloco:,}\n")
+                        log_f.write(f"  > Passaram no filtro Mun (Total Único): {total_mun_total:,}\n")
+                        log_f.write(f"  > Passaram no filtro CNAE:              {total_cnae:,}\n")
+                        log_f.write(f"  > Passaram no filtro Vínculo:           {total_vinc:,}\n")
+                        log_f.write(f"  > VÍNCULOS GUARDADOS (Cruzamento):      {total_all:,}\n")
+
+                        df_filtrado_pl = df_pl.filter(pl.col("pass_final"))
+                        cols_to_drop = ['pass_mun_1', 'pass_mun_2', 'pass_cnae', 'pass_vinc', 'pass_mun_total', 'pass_final']
+                        df_filtrado_pl = df_filtrado_pl.drop(cols_to_drop)
+
+                        if len(df_filtrado_pl) > 0:
+                            resultado_bloco = df_filtrado_pl.to_pandas()
+                            resultado_bloco[COLUNA_CNAE_CLASSE] = resultado_bloco['CNAE_Filtro']
+                            
+                            grouped = resultado_bloco.groupby('Mun_Filtro')
+                            for codigo_encontrado, grupo_df in grouped:
+                                if codigo_encontrado in municipios_dfs:
+                                    municipios_dfs[codigo_encontrado].append(grupo_df)
+
+                log_f.write("\n=========================================\n")
+                log_f.write(f"RESUMO GERAL DO PROCESSAMENTO:\n")
+                log_f.write(f"Total Global de Linhas Varridas: {total_geral_linhas_lidas:,}\n")
+                log_f.write(f"Total Global de Vínculos Extratos: {total_geral_linhas_salvas:,}\n")
+                log_f.write("=========================================\n")
+
+            self.atualizar_status("Extração de todos os arquivos concluída. A preparar relatórios...")
             msg_final = "Processamento Concluído!\n\nResultados:\n"
             dfs_brutos_agregados = []
             relatorios_para_excel = {}
@@ -598,7 +612,7 @@ class App:
                 if len(dfs_brutos_agregados) > 1:
                     df_regional = pd.concat([df for _, df in dfs_brutos_agregados], ignore_index=True)
                     df_regional = df_regional.sort_values(by=COLUNA_CNAE_CLASSE)
-                    caminho_csv_regional = os.path.join(PASTA_SAIDA, "Regional.csv")
+                    caminho_csv_regional = os.path.join(PASTA_SAIDA, f"Regional_{ufs_str}.csv")
                     df_regional.to_csv(caminho_csv_regional, index=False, sep=';', encoding=CODIFICACAO)
                     
                     df_regional_formatado = gerar_dataframe_relatorio(df_regional)
@@ -615,7 +629,7 @@ class App:
                 # 4. Salvar tudo num único arquivo Excel consolidado
                 if relatorios_para_excel:
                     self.atualizar_status("A guardar arquivo Excel consolidado...")
-                    nome_excel_final = f"Relatorio_Consolidado_{uf_selecionada}.xlsx"
+                    nome_excel_final = f"Relatorio_Consolidado_{ufs_str}.xlsx"
                     salvar_relatorio_multiplo_excel(relatorios_para_excel, nome_excel_final)
 
             msg_final += f"\nℹ️ O Arquivo Excel Consolidado e o Log foram guardados na pasta '{PASTA_SAIDA}'."
