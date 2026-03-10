@@ -182,10 +182,10 @@
     },
     "largura_colunas_especificas": {
       "CNPJ": 9,
-      "Instituição": 70,
-      "Segmento": 15,
+      "Instituição": 80,
+      "Segmento": 18,
       "Endereço": 30,
-      "Número": 6,
+      "Número": 8,
       "Bairro": 20,
       "Município": 20,
       "UF": 5,
