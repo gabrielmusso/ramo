@@ -162,5 +162,35 @@
     "RAIS_VINC_PUB_MG_ES_RJ.COMT": ["ES", "Espírito Santo", "MG", "Minas Gerais", "RJ", "Rio de Janeiro"],
     "RAIS_VINC_PUB_SP.COMT": ["SP", "São Paulo"],
     "RAIS_VINC_PUB_SUL.COMT": ["PR", "Paraná", "RS", "Rio Grande do Sul", "SC", "Santa Catarina"]
+  },
+  "postos_excel_config": {
+    "fonte_padrao": "Montserrat",
+    "font_size_corpo": 9,
+    "margens": {
+      "left": 0.4,
+      "right": 0.4,
+      "top": 0.6,
+      "bottom": 0.6
+    },
+    "estilo_cabecalho": {
+      "bold": true,
+      "align": "center",
+      "bg_color": "#D3D3D3",
+      "font_size": 10,
+      "bottom": 1,
+      "text_wrap": true
+    },
+    "largura_colunas_especificas": {
+      "CNPJ": 9,
+      "Instituição": 70,
+      "Segmento": 15,
+      "Endereço": 30,
+      "Número": 6,
+      "Bairro": 20,
+      "Município": 20,
+      "UF": 5,
+      "CEP": 10,
+      "Default": 18
+    }
   }
 }
