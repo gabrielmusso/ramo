@@ -40,10 +40,7 @@ PASTA_SAIDA.mkdir(parents=True, exist_ok=True)
 # ==========================================
 
 def detectar_linha_cabecalho(caminho_arquivo: Path) -> int:
-    """
-    Analisa as primeiras linhas do ficheiro para detetar onde começa a tabela real.
-    Identifica a linha com a maior densidade de colunas preenchidas.
-    """
+    """Detecta onde a tabela começa baseado na densidade de colunas preenchidas."""
     try:
         if caminho_arquivo.suffix.lower() == '.xlsx':
             df_sample = pd.read_excel(caminho_arquivo, header=None, nrows=30)
@@ -85,15 +82,21 @@ def processar_postos(municipios_alvo, app_instance):
         
         if df.empty: raise ValueError("O ficheiro lido parece estar vazio.")
 
-        # --- LIMPEZA DE ESPAÇOS NO CABEÇALHO ---
+        # --- LIMPEZA DE CABEÇALHO ---
         df.columns = [str(col).strip() for col in df.columns]
 
-        # 3. LIMPEZA GLOBAL DE ESPAÇOS NOS DADOS (Vetorizada)
+        # 3. LIMPEZA GLOBAL DE ESPAÇOS NOS DADOS
         app_instance.atualizar_status("A remover espaços em branco de todos os campos...")
         df = df.apply(lambda x: x.str.strip() if hasattr(x, "str") else x)
 
-        # 4. FILTRAGEM POR SEGMENTO (Coluna C / Índice 2)
-        app_instance.atualizar_status("A filtrar por Segmento (Coluna C)...")
+        # 4. MAPEAMENTO INTELIGENTE DE COLUNAS
+        # Tenta achar colunas pelo nome, se falhar usa o índice padrão
+        col_cnpj_nome = next((c for c in df.columns if "CNPJ" in c.upper()), df.columns[0])
+        col_segmento_nome = next((c for c in df.columns if "SEGMENTO" in c.upper()), df.columns[2])
+        col_municipio_nome = df.columns[-1] # Geralmente o código IBGE é o último
+
+        # 5. FILTRAGEM POR SEGMENTO
+        app_instance.atualizar_status("A filtrar por Segmento...")
         termos_permitidos = [
             "COOPERATIVA DE CRÉDITO",
             "SOCIEDADE DE CRÉDITO AO MICROEMPREENDEDOR",
@@ -106,12 +109,10 @@ def processar_postos(municipios_alvo, app_instance):
             v = str(val).upper()
             return v in ["", "NAN"] or v in termos_permitidos
 
-        if len(df.columns) > 2:
-            df = df[df.iloc[:, 2].apply(validar_segmento)].copy()
+        df = df[df[col_segmento_nome].apply(validar_segmento)].copy()
             
-        # 5. FILTRAGEM POR MUNICÍPIO (Última Coluna, 6 dígitos)
-        ultima_col = df.columns[-1]
-        df['_mun_temp'] = df[ultima_col].str.slice(0, 6)
+        # 6. FILTRAGEM POR MUNICÍPIO (Corte para 6 dígitos)
+        df['_mun_temp'] = df[col_municipio_nome].str.slice(0, 6)
         
         nome_final = "Postos_Filtrados_Consolidado.xlsx" if len(municipios_alvo) > 1 else f"Postos_{list(municipios_alvo.values())[0]}.xlsx"
         caminho_saida = PASTA_SAIDA / nome_final
@@ -122,22 +123,16 @@ def processar_postos(municipios_alvo, app_instance):
         with pd.ExcelWriter(caminho_saida, engine='xlsxwriter') as writer:
             workbook = writer.book
             
-            # Estilos baseados no config.json
+            # Configurações de Estilo do config.json
             font_name = POSTOS_EXCEL_CFG.get('fonte_padrao', 'Montserrat')
             font_size_body = POSTOS_EXCEL_CFG.get('font_size_corpo', 9)
-            
             head_cfg = POSTOS_EXCEL_CFG.get('estilo_cabecalho', {})
-            fmt_header = workbook.add_format({
-                'font_name': font_name,
-                'bold': head_cfg.get('bold', True),
-                'align': head_cfg.get('align', 'center'),
-                'font_size': head_cfg.get('font_size', 10),
-                'bg_color': head_cfg.get('bg_color', '#D3D3D3'),
-                'bottom': head_cfg.get('bottom', 1),
-                'text_wrap': head_cfg.get('text_wrap', True),
-                'border': 1
-            })
             
+            fmt_header = workbook.add_format({
+                'font_name': font_name, 'bold': head_cfg.get('bold', True),
+                'align': head_cfg.get('align', 'center'), 'font_size': head_cfg.get('font_size', 10),
+                'bg_color': head_cfg.get('bg_color', '#D3D3D3'), 'bottom': 1, 'border': 1, 'text_wrap': True
+            })
             fmt_body = workbook.add_format({'font_name': font_name, 'font_size': font_size_body})
             margens = POSTOS_EXCEL_CFG.get('margens', {})
 
@@ -147,18 +142,21 @@ def processar_postos(municipios_alvo, app_instance):
                     sucesso_global = True
                     df_sub = df_sub.drop(columns=['_mun_temp'])
                     
-                    # --- ORDENAÇÃO POR CNPJ (Coluna A / Índice 0) ---
-                    df_sub = df_sub.sort_values(by=df_sub.columns[0])
+                    # Ordenação por CNPJ
+                    df_sub = df_sub.sort_values(by=col_cnpj_nome)
                     
                     nome_aba = re.sub(r'[\\/*?:"<>|]', '', nome_mun)[:31]
                     df_sub.to_excel(writer, sheet_name=nome_aba, index=False)
                     ws = writer.sheets[nome_aba]
                     
+                    # Filtros e Congelamento
+                    ws.freeze_panes(1, 0)
+                    ws.autofilter(0, 0, len(df_sub), len(df_sub.columns) - 1)
+                    ws.set_zoom(100)
+
                     ws.set_margins(
-                        left=margens.get('left', 0.5),
-                        right=margens.get('right', 0.5),
-                        top=margens.get('top', 0.75),
-                        bottom=margens.get('bottom', 0.75)
+                        left=margens.get('left', 0.5), right=margens.get('right', 0.5),
+                        top=margens.get('top', 0.75), bottom=margens.get('bottom', 0.75)
                     )
                     
                     larguras_map = POSTOS_EXCEL_CFG.get('largura_colunas_especificas', {})
@@ -177,7 +175,8 @@ def processar_postos(municipios_alvo, app_instance):
             if caminho_saida.exists(): caminho_saida.unlink()
             app_instance.atualizar_interface(messagebox.showwarning, "Aviso", "Sem resultados encontrados.")
         else:
-            app_instance.atualizar_interface(messagebox.showinfo, "Sucesso", f"Relatório gerado em:\n{caminho_saida}")
+            app_instance.atualizar_status("Processo concluído!")
+            app_instance.atualizar_interface(messagebox.showinfo, "Sucesso", f"Relatório gerado com sucesso em:\n{caminho_saida}")
 
     except Exception as e:
         app_instance.atualizar_status("Erro no processamento.")
@@ -192,35 +191,35 @@ def processar_postos(municipios_alvo, app_instance):
 class AppFiltrador:
     def __init__(self, root, ufs, df_mun, mun_map):
         self.root, self.ufs, self.df_municipios, self.municipios_map = root, ufs, df_mun, mun_map
-        self.root.title("Filtrador de Postos - Limpeza e Segmento")
+        self.root.title("Filtrador de Postos BCB - v2.0")
         self.root.geometry("600x680")
 
         main_frame = ttk.Frame(root, padding="20")
         main_frame.pack(expand=True, fill=tk.BOTH)
         
-        ttk.Label(main_frame, text="UF:", font=("Arial", 10, "bold")).pack(anchor="w")
+        ttk.Label(main_frame, text="Selecione a UF:", font=("Arial", 10, "bold")).pack(anchor="w")
         self.uf_var = tk.StringVar()
         self.uf_combo = ttk.Combobox(main_frame, textvariable=self.uf_var, values=self.ufs, state="readonly")
         self.uf_combo.pack(fill="x", pady=(5, 15))
         self.uf_combo.bind("<<ComboboxSelected>>", self.update_mun)
 
-        ttk.Label(main_frame, text="Município:", font=("Arial", 10, "bold")).pack(anchor="w")
+        ttk.Label(main_frame, text="Selecione o Município:", font=("Arial", 10, "bold")).pack(anchor="w")
         self.mun_var = tk.StringVar()
         self.mun_combo = ttk.Combobox(main_frame, textvariable=self.mun_var, state="disabled")
         self.mun_combo.pack(fill="x", pady=(5, 10))
 
         ttk.Button(main_frame, text="Incluir Município ⬇", command=self.add_mun).pack(pady=5)
-        self.lista_mun = tk.Listbox(main_frame, height=8)
+        self.lista_mun = tk.Listbox(main_frame, height=8, font=("Arial", 9))
         self.lista_mun.pack(fill="both", expand=True, pady=5)
 
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill="x")
-        ttk.Button(btn_frame, text="Remover Último", command=lambda: self.lista_mun.delete(tk.END)).pack(side="left", padx=2)
-        ttk.Button(btn_frame, text="Limpar Lista", command=lambda: self.lista_mun.delete(0, tk.END)).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="Remover Selecionado", command=lambda: self.lista_mun.delete(tk.ANCHOR)).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="Limpar Tudo", command=lambda: self.lista_mun.delete(0, tk.END)).pack(side="left", padx=2)
 
-        self.start_button = ttk.Button(main_frame, text="GERAR RELATÓRIO DE POSTOS", command=self.start)
+        self.start_button = ttk.Button(main_frame, text="EXECUTAR FILTRAGEM", command=self.start)
         self.start_button.pack(pady=20)
-        self.status_label = ttk.Label(main_frame, text="Pronto.", foreground="blue")
+        self.status_label = ttk.Label(main_frame, text="Aguardando comandos...", foreground="gray")
         self.status_label.pack()
 
     def atualizar_interface(self, func, *args, **kwargs): self.root.after(0, lambda: func(*args, **kwargs))
@@ -239,7 +238,7 @@ class AppFiltrador:
 
     def start(self):
         itens = self.lista_mun.get(0, tk.END)
-        if not itens: return messagebox.showerror("Erro", "Selecione municípios.")
+        if not itens: return messagebox.showerror("Erro", "Selecione municípios para filtrar.")
         m_alvo = {}
         for it in itens:
             uf, nome = it.split(" - ")
@@ -260,4 +259,4 @@ if __name__ == "__main__":
             root_tk = tk.Tk()
             AppFiltrador(root_tk, ufs_lista, df_mun, mapa_indices)
             root_tk.mainloop()
-        except Exception as err: print(f"Erro: {err}")
+        except Exception as err: print(f"Erro ao iniciar GUI: {err}")
