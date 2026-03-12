@@ -2,8 +2,9 @@ import zipfile
 import datetime
 import logging
 import re
+import time
 from pathlib import Path
-from typing import Tuple, Optional, Iterator
+from typing import Tuple, Optional, Iterator, List
 from dataclasses import dataclass
 
 import requests
@@ -18,6 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Pasta onde os dados serão armazenados
 PASTA_DESTINO = Path("~/repos/ramo/dados").expanduser()
 
 HEADERS = {
@@ -25,16 +27,26 @@ HEADERS = {
 }
 
 # ==========================================
-# --- ESTRUTURA DE DADOS (DATACLASSES) ---
+# --- ESTRUTURA DE DADOS ---
 # ==========================================
 @dataclass
 class BaseBCB:
-    """Estrutura que define as propriedades de cada base de dados a ser atualizada."""
+    """Define as propriedades de cada base de dados do BCB."""
     id: str
     nome: str
     sufixo_arquivo: str
     url_base: str
 
+@dataclass
+class ResultadoProcessamento:
+    """Armazena o resultado da execução para o relatório final."""
+    base_nome: str
+    versao_anterior: int
+    versao_nova: int
+    status: str
+    mensagem: str = ""
+
+# Lista de bases configuradas
 BASES_DE_DADOS = [
     BaseBCB(
         id="correspondentes",
@@ -47,14 +59,20 @@ BASES_DE_DADOS = [
         nome="Postos de Atendimento",
         sufixo_arquivo="POSTOS",
         url_base="https://www.bcb.gov.br/content/estabilidadefinanceira/agenciasconsorcio/postos"
+    ),
+    BaseBCB(
+        id="cooperativas",
+        nome="Cooperativas de Crédito",
+        sufixo_arquivo="COOPERATIVAS",
+        url_base="https://www.bcb.gov.br/content/estabilidadefinanceira/relacao_instituicoes_funcionamento/Cooperativas-de-credito"
     )
 ]
 
 # ==========================================
-# --- FUNÇÕES AUXILIARES ---
+# --- UTILITÁRIOS ---
 # ==========================================
 def iterar_ultimos_meses(quantidade: int = 12) -> Iterator[int]:
-    """Gera iterativamente os formatos YYYYMM dos últimos X meses."""
+    """Gera o formato YYYYMM dos últimos X meses de forma decrescente."""
     hoje = datetime.date.today()
     ano, mes = hoje.year, hoje.month
     
@@ -66,131 +84,137 @@ def iterar_ultimos_meses(quantidade: int = 12) -> Iterator[int]:
             ano -= 1
 
 def obter_versao_local(base: BaseBCB) -> int:
-    """
-    Verifica fisicamente na pasta de destino qual é a versão mais recente
-    já extraída para esta base de dados (procura ficheiros com o sufixo e YYYYMM).
-    """
+    """Identifica a maior versão YYYYMM já baixada (checa apenas .xlsx)."""
     maior_versao = 0
+    if not PASTA_DESTINO.exists():
+        return 0
+        
     sufixo_alvo = base.sufixo_arquivo.upper()
-    
-    if PASTA_DESTINO.exists():
-        for ficheiro in PASTA_DESTINO.iterdir():
-            if ficheiro.is_file():
-                nome_arquivo = ficheiro.name.upper()
-                
-                # Verifica se o ficheiro pertence a esta base (ex: tem 'CORRESPONDENTES' no nome)
-                if sufixo_alvo in nome_arquivo:
-                    # Extrai os 6 dígitos (YYYYMM) do nome do ficheiro
-                    match = re.search(r'(\d{6})', nome_arquivo)
-                    if match:
-                        versao_ficheiro = int(match.group(1))
-                        if versao_ficheiro > maior_versao:
-                            maior_versao = versao_ficheiro
-                            
+    for ficheiro in PASTA_DESTINO.iterdir():
+        # Verifica se é um arquivo Excel desta base
+        if ficheiro.is_file() and ficheiro.suffix.lower() == ".xlsx" and sufixo_alvo in ficheiro.name.upper():
+            match = re.search(r'(\d{6})', ficheiro.name)
+            if match:
+                versao = int(match.group(1))
+                if versao > maior_versao:
+                    maior_versao = versao
     return maior_versao
 
+def remover_arquivos_antigos(base: BaseBCB, versao_atual: int):
+    """Remove arquivos Excel com versão inferior à atual da mesma base."""
+    sufixo_alvo = base.sufixo_arquivo.upper()
+    for ficheiro in PASTA_DESTINO.iterdir():
+        if ficheiro.is_file() and ficheiro.suffix.lower() == ".xlsx" and sufixo_alvo in ficheiro.name.upper():
+            match = re.search(r'(\d{6})', ficheiro.name)
+            if match and int(match.group(1)) < versao_atual:
+                try:
+                    ficheiro.unlink()
+                    logger.info(f"Removido Excel antigo: {ficheiro.name}")
+                except Exception as e:
+                    logger.warning(f"Erro ao remover {ficheiro.name}: {e}")
+
 # ==========================================
-# --- MOTOR PRINCIPAL ---
+# --- CLIENTE DE DOWNLOAD ---
 # ==========================================
-def buscar_link_diretamente_no_servidor(session: requests.Session, base: BaseBCB) -> Tuple[Optional[int], Optional[str]]:
-    """Tenta aceder diretamente às URLs ocultas usando uma sessão HTTP persistente."""
-    logger.info(f"A procurar ficheiros para a base: {base.nome}...")
-    
-    for versao_int in iterar_ultimos_meses(12):
-        versao_str = str(versao_int)
-        logger.info(f"A verificar a existência do ficheiro de {versao_str}...")
-        
-        # O BCB costuma cometer erros de digitação (espaços antes do .zip).
-        variacoes_url = [
-            f"{base.url_base}/{versao_str}{base.sufixo_arquivo}.zip",
-            f"{base.url_base}/{versao_str}{base.sufixo_arquivo}%20.zip",
-            f"{base.url_base}/{versao_str}{base.sufixo_arquivo} .zip"
-        ]
-        
-        for url in variacoes_url:
+class BCBDownloader:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update(HEADERS)
+
+    def request_com_retry(self, url: str, stream: bool = False, timeout: int = 10) -> Optional[requests.Response]:
+        """Realiza a requisição com até 3 tentativas simples."""
+        for i in range(3):
             try:
-                # O bloco 'with' garante que o fluxo é fechado, mas a conexão subjacente da 'session' continua aberta
-                with session.get(url, stream=True, timeout=5) as resposta:
-                    if resposta.status_code == 200:
-                        tipo_conteudo = resposta.headers.get('Content-Type', '')
-                        
-                        if 'zip' in tipo_conteudo.lower() or 'octet-stream' in tipo_conteudo.lower():
-                            return versao_int, url
-                            
+                response = self.session.get(url, stream=stream, timeout=timeout)
+                return response
             except requests.RequestException:
-                continue
+                wait = (i + 1) * 2
+                time.sleep(wait)
+        return None
 
-    return None, None
+    def buscar_link(self, base: BaseBCB) -> Tuple[Optional[int], Optional[str]]:
+        """Tenta encontrar o link de download testando variações de URL nos últimos meses."""
+        logger.info(f"Pesquisando versões para: {base.nome}")
+        for versao in iterar_ultimos_meses(12):
+            v_str = str(versao)
+            urls = [
+                f"{base.url_base}/{v_str}{base.sufixo_arquivo}.zip",
+                f"{base.url_base}/{v_str}{base.sufixo_arquivo}%20.zip",
+                f"{base.url_base}/{v_str}{base.sufixo_arquivo} .zip"
+            ]
+            for url in urls:
+                resp = self.request_com_retry(url, stream=True)
+                if resp and resp.status_code == 200:
+                    return versao, url
+        return None, None
 
-def baixar_e_extrair(session: requests.Session, url_download: str, versao: int, base: BaseBCB) -> bool:
-    """Faz o download do arquivo ZIP, extrai e substitui a base local."""
-    caminho_zip = PASTA_DESTINO / f"temp_{base.id}_{versao}.zip"
-    
-    logger.info(f"[{base.nome}] A iniciar o download da versão {versao}...")
-    logger.info(f"URL: {url_download}")
-    
-    try:
-        with session.get(url_download, stream=True, timeout=30) as r:
-            r.raise_for_status()
-            with caminho_zip.open('wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
+    def baixar_e_extrair(self, url: str, versao: int, base: BaseBCB) -> bool:
+        """Faz o download do ZIP e extrai o Excel para a pasta destino."""
+        temp_zip = PASTA_DESTINO / f"temp_{base.id}_{versao}.zip"
+        try:
+            resp = self.request_com_retry(url, stream=True, timeout=60)
+            if not resp or resp.status_code != 200:
+                return False
+
+            with temp_zip.open('wb') as f:
+                for chunk in resp.iter_content(chunk_size=16384):
                     f.write(chunk)
-                    
-        logger.info(f"[{base.nome}] Download concluído! A descompactar...")
-        
-        with zipfile.ZipFile(caminho_zip, 'r') as zip_ref:
-            zip_ref.extractall(PASTA_DESTINO)
             
-        logger.info(f"[{base.nome}] Ficheiros extraídos com sucesso na pasta '{PASTA_DESTINO}'.")
-        return True
-        
-    except Exception as e:
-        logger.error(f"[{base.nome}] Erro durante o download ou extração: {e}")
-        return False
-        
-    finally:
-        if caminho_zip.exists():
-            caminho_zip.unlink()
+            with zipfile.ZipFile(temp_zip, 'r') as z:
+                # Extrai tudo diretamente na pasta destino
+                z.extractall(PASTA_DESTINO)
+            
+            logger.info(f"✅ Download e extração concluídos para {base.id}.")
+            return True
+        except Exception as e:
+            logger.error(f"Erro no download/extração de {base.id}: {e}")
+            return False
+        finally:
+            if temp_zip.exists():
+                temp_zip.unlink()
 
-def executar_atualizacao() -> None:
-    logger.info("=== INÍCIO DA VERIFICAÇÃO BCB (MÉTODO DIRETO / URL GUESSING) ===")
+# ==========================================
+# --- EXECUÇÃO PRINCIPAL ---
+# ==========================================
+def executar_atualizacao():
+    logger.info("=== INICIANDO ATUALIZADOR BCB (MODO DOWNLOAD DIRETO .XLSX) ===")
     PASTA_DESTINO.mkdir(parents=True, exist_ok=True)
     
-    # Inicia a sessão HTTP única para todas as requisições
-    with requests.Session() as session:
-        session.headers.update(HEADERS)
+    downloader = BCBDownloader()
+    relatorio: List[ResultadoProcessamento] = []
+
+    for base in BASES_DE_DADOS:
+        logger.info("-" * 40)
+        versao_local = obter_versao_local(base)
+        versao_web, link_web = downloader.buscar_link(base)
         
-        for base in BASES_DE_DADOS:
-            logger.info("-" * 50)
-            logger.info(f"PROCESSANDO BASE: {base.nome.upper()}")
+        if not versao_web:
+            relatorio.append(ResultadoProcessamento(base.nome, versao_local, 0, "FALHA", "Arquivo não encontrado no servidor"))
+            continue
+
+        if versao_web > versao_local:
+            logger.info(f"Atualização disponível: {versao_web} (Local: {versao_local if versao_local > 0 else 'Nenhuma'})")
             
-            # O robô agora vasculha a pasta real para ver o que tem lá dentro
-            versao_local = obter_versao_local(base)
-            
-            logger.info(f"Versão local atual (encontrada na pasta): {versao_local if versao_local > 0 else 'Nenhuma'}")
-            
-            versao_web, link_web = buscar_link_diretamente_no_servidor(session, base)
-            
-            if not versao_web or not link_web:
-                logger.warning(f"Não foi possível localizar o ficheiro para '{base.nome}'.")
-                continue
-                
-            logger.info(f"✅ Encontrada! Versão mais recente nos servidores: {versao_web}")
-            
-            if versao_web > versao_local:
-                logger.info("ATUALIZAÇÃO NECESSÁRIA! A iniciar processo...")
-                
-                sucesso = baixar_e_extrair(session, link_web, versao_web, base)
-                
-                if sucesso:
-                    logger.info(f"Base '{base.nome}' atualizada para a versão {versao_web} com sucesso!")
-                else:
-                    logger.error(f"A atualização da base '{base.nome}' falhou.")
+            if downloader.baixar_e_extrair(link_web, versao_web, base):
+                remover_arquivos_antigos(base, versao_web)
+                relatorio.append(ResultadoProcessamento(base.nome, versao_local, versao_web, "ATUALIZADO"))
             else:
-                logger.info(f"A base '{base.nome}' já tem a versão mais atual na sua pasta. Nenhuma ação necessária.")
-            
-    logger.info("=" * 50)
-    logger.info("VERIFICAÇÃO TOTAL CONCLUÍDA!")
+                relatorio.append(ResultadoProcessamento(base.nome, versao_local, versao_web, "ERRO", "Falha no download"))
+        else:
+            logger.info(f"Base '{base.nome}' já está atualizada ({versao_local}).")
+            relatorio.append(ResultadoProcessamento(base.nome, versao_local, versao_local, "OK"))
+
+    # Exibição do Log Final
+    logger.info("=" * 40)
+    logger.info("RESUMO DA OPERAÇÃO:")
+    for item in relatorio:
+        msg = f"- {item.base_nome}: {item.status}"
+        if item.status == "ATUALIZADO":
+            msg += f" (Versão Baixada: {item.versao_nova})"
+        elif item.mensagem:
+            msg += f" [{item.mensagem}]"
+        logger.info(msg)
+    logger.info("=" * 40)
 
 if __name__ == "__main__":
     executar_atualizacao()
