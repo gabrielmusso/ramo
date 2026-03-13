@@ -47,130 +47,257 @@ ARQUIVO_MUNICIPIOS = PASTA_DADOS / C_GLOB['arquivo_municipios']
 # Mapeamento dinâmico de UFs para arquivos Parquet
 MAPA_ARQUIVOS_UF = {}
 for arquivo, ufs in CONFIG['regioes_arquivos'].items():
-    # TRAVA DE SEGURANÇA: Força a extensão para .parquet independentemente do JSON
     arquivo_parquet = Path(arquivo).with_suffix('.parquet').name
     for uf in ufs:
         MAPA_ARQUIVOS_UF[uf] = arquivo_parquet
 
-# Cria a pasta de saída para os relatórios, se não existir
 PASTA_SAIDA.mkdir(parents=True, exist_ok=True)
+
+# ==============================================================================
+# --- MAPA DE COLUNAS E FORMATAÇÕES ---
+# ==============================================================================
+
+# O dicionário 'cabecalho_duplo' foi movido integralmente para o config.json
+# para facilitar futuras manutenções e personalizações de layout.
+
+DATA_COLS_MAP = [
+    ('Total Vínculos', 'int'), ('Remuneração Média', 'money'), ('Homens', 'percent'), ('Mulheres', 'percent'),
+    ('Branca', 'percent'), ('Preta', 'percent'), ('Parda', 'percent'), ('Amarela', 'percent'), ('Indígena', 'percent'), ('NI', 'percent'),
+    ('Até 18', 'percent'), ('18-29', 'percent'), ('30-39', 'percent'), ('40-49', 'percent'), ('50-65', 'percent'), ('Acima de 65', 'percent'),
+    ('Até 6 meses', 'percent'), ('De 6 Meses a 1 Ano', 'percent'), ('De 1 a 2 Anos', 'percent'), ('De 2 a 5 Anos', 'percent'), ('De 5 a 10 Anos', 'percent'), ('Acima de 10 Anos', 'percent'),
+    ('Fund', 'percent'), ('MedInc', 'percent'), ('MedComp', 'percent'), ('SupInc', 'percent'), ('SupComp', 'percent'), ('Pos', 'percent'),
+    ('Nenhum Afastamento', 'percent'), ('Um', 'percent'), ('Aci_1', 'percent'), ('Dias_1', 'float'),
+    ('Dois', 'percent'), ('Aci_2', 'percent'), ('Dias_2', 'float'),
+    ('Três ou Mais', 'percent'), ('Aci_3', 'percent'), ('Dias_3', 'float'),
+    ('Até 30H', 'percent'), ('De 30H a 40H', 'percent'), ('Acima de 40H', 'percent'),
+    ('Intermitente', 'percent'), ('Parcial', 'percent')
+]
 
 # ==============================================================================
 # --- FUNÇÕES DE PROCESSAMENTO E RELATÓRIO ---
 # ==============================================================================
 
 def calcular_metricas(group: pd.DataFrame) -> pd.Series:
-    """Calcula estatísticas de remuneração e composição demográfica (Gênero/Raça)."""
+    """Calcula estatísticas avançadas baseadas nas novas métricas RAIS."""
     total_vinculos = len(group)
     
-    # Se o grupo estiver vazio, retorna placeholders para evitar erros
     if total_vinculos == 0:
-        return pd.Series({
-            'Remunacao Media': '-', 'Pct Homens': '-', 'Pct Mulheres': '-',
-            'Total Vinculos': 0, 'Pct Branca': '-', 'Pct Preta': '-',
-            'Pct Parda': '-', 'Pct Amarela': '-', 'Pct Indigena': '-', 'Pct Ignorado/NI': '-'
-        })
+        vazio = {col: ('-' if fmt in ['money', 'float', 'percent'] else 0) for col, fmt in DATA_COLS_MAP}
+        vazio['Total Vínculos'] = 0
+        return pd.Series(vazio)
 
-    # A remuneração já vem como número DOUBLE do DuckDB
-    media_remuneracao = group['Remuneracao_Num'].mean(skipna=True)
-    media_remuneracao = round(media_remuneracao, 2) if pd.notna(media_remuneracao) else np.nan
+    # 1. Remuneração e Demografia Básica
+    media_remun = group['Remuneracao_Num'].mean(skipna=True)
+    media_remun = round(media_remun, 2) if pd.notna(media_remun) else np.nan
     
-    contagem_genero = group['Genero_Limpo'].value_counts(normalize=True)
-    pct_homem = round(contagem_genero.get('Masculino', 0.0), 3)
-    pct_mulher = round(contagem_genero.get('Feminino', 0.0), 3)
+    pct_homens = group['Genero_Limpo'].eq('Masculino').sum() / total_vinculos
+    pct_mulheres = group['Genero_Limpo'].eq('Feminino').sum() / total_vinculos
     
-    contagem_raca = group['Raca_Limpa'].value_counts(normalize=True)
-    pct_branca = round(contagem_raca.get('BRANCA', 0.0), 3)
-    pct_preta = round(contagem_raca.get('PRETA', 0.0), 3)
-    pct_parda = round(contagem_raca.get('PARDA', 0.0), 3)
-    pct_amarela = round(contagem_raca.get('AMARELA', 0.0), 3)
-    pct_indigena = round(contagem_raca.get('INDIGENA', 0.0), 3)
-    pct_ignorado_ni = round(contagem_raca.get('NAO IDENT', 0.0) + contagem_raca.get('IGNORADO', 0.0), 3)
+    c_raca = group['Raca_Limpa'].value_counts(dropna=False)
+    pct_ni = (c_raca.get('NAO IDENT', 0) + c_raca.get('IGNORADO', 0)) / total_vinculos
+
+    # 2. Faixa Etária (Anos)
+    c_idade = pd.cut(group['Idade_Num'], bins=[-1, 18, 29, 39, 49, 65, 999], 
+                     labels=['Até 18', '18-29', '30-39', '40-49', '50-65', 'Acima de 65']).value_counts(dropna=False)
+    
+    # 3. Tempo no Emprego (Meses)
+    c_tempo = pd.cut(group['Tempo_Emprego_Num'], bins=[-1, 6, 12, 24, 60, 120, 99999], 
+                     labels=['Até 6 meses', 'De 6 Meses a 1 Ano', 'De 1 a 2 Anos', 'De 2 a 5 Anos', 'De 5 a 10 Anos', 'Acima de 10 Anos']).value_counts(dropna=False)
+
+    # 4. Escolaridade
+    map_esc = {1: 'Fund', 2: 'Fund', 3: 'Fund', 4: 'Fund', 5: 'Fund', 
+               6: 'MedInc', 7: 'MedComp', 8: 'SupInc', 9: 'SupComp', 10: 'Pos', 11: 'Pos'}
+    c_esc = group['Escolaridade_Num'].map(map_esc).value_counts(dropna=False)
+
+    # 5. Afastamentos (Lógica simples com strings, usando 999 para nenhum afastamento)
+    c1 = group['Causa_Afast_1'].astype(str).str.strip()
+    c2 = group['Causa_Afast_2'].astype(str).str.strip()
+    c3 = group['Causa_Afast_3'].astype(str).str.strip()
+    
+    aci_codes = ['10', '10.0', '20', '20.0', '30', '30.0', '90', '90.0']
+    is_aci = c1.isin(aci_codes) | c2.isin(aci_codes) | c3.isin(aci_codes)
+    
+    # 999 = Nenhum afastamento. Adicionamos nulos e 0 por segurança contra dados sujos.
+    nao_afastado = ['999', '999.0', '999.00', 'nan', 'None', '', '-1', '-1.0', '0', '0.0']
+    
+    count_afast = (~c1.isin(nao_afastado)).astype(int) + \
+                  (~c2.isin(nao_afastado)).astype(int) + \
+                  (~c3.isin(nao_afastado)).astype(int)
+    
+    afast_nenhum = (count_afast == 0).sum() / total_vinculos
+    
+    # Cálculos por incidência reajustados à nova lógica
+    def estatisticas_afast(mask):
+        # Percentual de pessoas nesta faixa / total de vínculos
+        pct = mask.sum() / total_vinculos
+        
+        # Percentual de pessoas nesta faixa que tiveram acidente / total de vínculos
+        aci = (is_aci & mask).sum() / total_vinculos
+        
+        # Média de dias ausentes SOMENTE para os trabalhadores que estão nesta faixa
+        dias = pd.to_numeric(group.loc[mask, 'Dias_Afast_Num'], errors='coerce').mean() if mask.any() else 0
+        
+        return pct, aci, dias
+
+    afast_1_pct, afast_1_aci, afast_1_dias = estatisticas_afast(count_afast == 1)
+    afast_2_pct, afast_2_aci, afast_2_dias = estatisticas_afast(count_afast == 2)
+    afast_3_pct, afast_3_aci, afast_3_dias = estatisticas_afast(count_afast >= 3)
+
+    # 6. Jornada Contratada (Horas)
+    c_jor = pd.cut(group['Jornada_Num'], bins=[-1, 30, 40, 999], 
+                   labels=['Até 30H', 'De 30H a 40H', 'Acima de 40H']).value_counts(dropna=False)
+
+    # 7. Marcadores (Intermitente e Parcial)
+    val_positivos = ['1', '01', 'SIM', 'S', 'Sim']
+    ind_int = group['Ind_Intermitente'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+    ind_par = group['Ind_Parcial'].astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+    
+    inter_pct = ind_int.isin(val_positivos).sum() / total_vinculos
+    parcial_pct = ind_par.isin(val_positivos).sum() / total_vinculos
 
     return pd.Series({
-        'Remunacao Media': media_remuneracao, 
-        'Pct Homens': pct_homem, 
-        'Pct Mulheres': pct_mulher,
-        'Total Vinculos': total_vinculos, 
-        'Pct Branca': pct_branca, 
-        'Pct Preta': pct_preta,
-        'Pct Parda': pct_parda, 
-        'Pct Amarela': pct_amarela, 
-        'Pct Indigena': pct_indigena, 
-        'Pct Ignorado/NI': pct_ignorado_ni
+        'Total Vínculos': total_vinculos, 
+        'Remuneração Média': media_remun, 
+        'Homens': pct_homens, 
+        'Mulheres': pct_mulheres,
+        'Branca': c_raca.get('BRANCA', 0) / total_vinculos, 
+        'Preta': c_raca.get('PRETA', 0) / total_vinculos, 
+        'Parda': c_raca.get('PARDA', 0) / total_vinculos, 
+        'Amarela': c_raca.get('AMARELA', 0) / total_vinculos, 
+        'Indígena': c_raca.get('INDIGENA', 0) / total_vinculos, 
+        'NI': pct_ni,
+        
+        'Até 18': c_idade.get('Até 18', 0) / total_vinculos, 
+        '18-29': c_idade.get('18-29', 0) / total_vinculos, 
+        '30-39': c_idade.get('30-39', 0) / total_vinculos, 
+        '40-49': c_idade.get('40-49', 0) / total_vinculos, 
+        '50-65': c_idade.get('50-65', 0) / total_vinculos, 
+        'Acima de 65': c_idade.get('Acima de 65', 0) / total_vinculos,
+        
+        'Até 6 meses': c_tempo.get('Até 6 meses', 0) / total_vinculos, 
+        'De 6 Meses a 1 Ano': c_tempo.get('De 6 Meses a 1 Ano', 0) / total_vinculos, 
+        'De 1 a 2 Anos': c_tempo.get('De 1 a 2 Anos', 0) / total_vinculos, 
+        'De 2 a 5 Anos': c_tempo.get('De 2 a 5 Anos', 0) / total_vinculos, 
+        'De 5 a 10 Anos': c_tempo.get('De 5 a 10 Anos', 0) / total_vinculos, 
+        'Acima de 10 Anos': c_tempo.get('Acima de 10 Anos', 0) / total_vinculos,
+        
+        'Fund': c_esc.get('Fund', 0) / total_vinculos, 
+        'MedInc': c_esc.get('MedInc', 0) / total_vinculos, 
+        'MedComp': c_esc.get('MedComp', 0) / total_vinculos, 
+        'SupInc': c_esc.get('SupInc', 0) / total_vinculos, 
+        'SupComp': c_esc.get('SupComp', 0) / total_vinculos, 
+        'Pos': c_esc.get('Pos', 0) / total_vinculos,
+        
+        'Nenhum Afastamento': afast_nenhum,
+        'Um': afast_1_pct, 'Aci_1': afast_1_aci, 'Dias_1': afast_1_dias,
+        'Dois': afast_2_pct, 'Aci_2': afast_2_aci, 'Dias_2': afast_2_dias,
+        'Três ou Mais': afast_3_pct, 'Aci_3': afast_3_aci, 'Dias_3': afast_3_dias,
+        
+        'Até 30H': c_jor.get('Até 30H', 0) / total_vinculos, 
+        'De 30H a 40H': c_jor.get('De 30H a 40H', 0) / total_vinculos, 
+        'Acima de 40H': c_jor.get('Acima de 40H', 0) / total_vinculos,
+        
+        'Intermitente': inter_pct, 
+        'Parcial': parcial_pct
     })
 
 def salvar_relatorio_consolidado_excel(dict_relatorios: dict, caminho_arquivo: str):
-    """Gera um único arquivo Excel contendo múltiplas abas (uma para cada dataframe)."""
+    """Gera um único arquivo Excel contendo múltiplas abas com cabeçalho de 2 linhas."""
     caminho_completo = PASTA_SAIDA / caminho_arquivo
     try:
         excel_kwargs = {'options': {'nan_inf_to_errors': True}}
         with pd.ExcelWriter(caminho_completo, engine='xlsxwriter', engine_kwargs=excel_kwargs) as writer:
             workbook = writer.book
             
-            # Formatos numéricos e base
+            # Configuração Visual via JSON
             f_num = C_EXCEL['formatos_numericos']
             f_base = {'font_name': C_EXCEL['fonte_padrao']}
             
             fmt_money = {**f_base, 'num_format': f_num['dinheiro'], 'align': 'right'}
             fmt_percent = {**f_base, 'num_format': f_num['percentual'], 'align': 'right'}
             fmt_number = {**f_base, 'num_format': f_num['inteiro'], 'align': 'right'}
+            fmt_float = {**f_base, 'num_format': '#,##0.0', 'align': 'right'} # Novo formato para médias de dias
             fmt_string_r = {**f_base, 'align': 'right'}
             
-            # Estilos Hierárquicos dinâmicos (L0 a L3) criados apenas uma vez por arquivo
             st_niveis = C_EXCEL['estilos_niveis']
             fmt_hierarquia = {}
             for lvl in ['l0', 'l1', 'l2', 'l3']:
-                base_lvl = {**f_base, **st_niveis[lvl]}
-                fmt_hierarquia[f"{lvl}_text"] = workbook.add_format({**base_lvl, 'align': 'left'})
-                fmt_hierarquia[f"{lvl}_money"] = workbook.add_format({**base_lvl, **fmt_money})
-                fmt_hierarquia[f"{lvl}_percent"] = workbook.add_format({**base_lvl, **fmt_percent})
-                fmt_hierarquia[f"{lvl}_int"] = workbook.add_format({**base_lvl, **fmt_number})
-                fmt_hierarquia[f"{lvl}_str_r"] = workbook.add_format({**base_lvl, **fmt_string_r})
+                b_lvl = {**f_base, **st_niveis[lvl]}
+                fmt_hierarquia[f"{lvl}_text"] = workbook.add_format({**b_lvl, 'align': 'left'})
+                fmt_hierarquia[f"{lvl}_money"] = workbook.add_format({**b_lvl, **fmt_money})
+                fmt_hierarquia[f"{lvl}_percent"] = workbook.add_format({**b_lvl, **fmt_percent})
+                fmt_hierarquia[f"{lvl}_int"] = workbook.add_format({**b_lvl, **fmt_number})
+                fmt_hierarquia[f"{lvl}_float"] = workbook.add_format({**b_lvl, **fmt_float})
+                fmt_hierarquia[f"{lvl}_str_r"] = workbook.add_format({**b_lvl, **fmt_string_r})
 
-            h_fmt = workbook.add_format({**f_base, **C_EXCEL['estilo_cabecalho']})
+            # Formatação do Cabeçalho (Negrito, Bordas, Fundo opcional pelo JSON)
+            h_fmt = workbook.add_format({**f_base, **C_EXCEL['estilo_cabecalho'], 'valign': 'vcenter'})
+            
+            # Lê o cabeçalho diretamente do config.json
+            if 'cabecalho_duplo' not in CONFIG:
+                raise ValueError("A configuração 'cabecalho_duplo' não foi encontrada no arquivo config.json.")
+            cabecalho_cfg = CONFIG['cabecalho_duplo']
 
-            # Itera sobre o dicionário construindo uma aba para cada cidade/região
             for sheet_name, df_final in dict_relatorios.items():
                 worksheet = workbook.add_worksheet(sheet_name)
                 
-                # Margens
                 m = C_EXCEL['margens']
                 worksheet.set_margins(left=m['left'], right=m['right'], top=m['top'], bottom=m['bottom'])
 
-                # Larguras de Colunas
+                # Ajuste Fixo de Larguras com base num padrão extendido
                 l_cols = C_EXCEL['largura_colunas_pixels']
-                col_map = ['A', 'B', 'C', 'D', 'E', 'F', 'G']
-                for i, col_letter in enumerate(col_map):
-                    worksheet.set_column_pixels(i, i, l_cols[col_letter])
-                worksheet.set_column_pixels(7, 14, l_cols['H_O'])
+                worksheet.set_column_pixels(0, 0, l_cols.get('A', 10))
+                worksheet.set_column_pixels(1, 1, l_cols.get('B', 50))
+                worksheet.set_column_pixels(2, 2, l_cols.get('C', 50))
+                worksheet.set_column_pixels(3, 3, l_cols.get('D', 50))
+                worksheet.set_column_pixels(4, 4, l_cols.get('E', 650))
+                worksheet.set_column_pixels(5, 5, l_cols.get('F', 75))
+                worksheet.set_column_pixels(6, 6, l_cols.get('G', 110))
+                worksheet.set_column_pixels(7, 50, l_cols.get('H_O', 80)) # Aplica largura a todas as métricas
 
-                # Cabeçalho - Limpando as células A1 a E1
-                headers = list(df_final.columns)
-                headers[0:5] = [''] * 5  # Substitui os Níveis 1 a 5 por strings vazias
-                worksheet.write_row('A1', headers, h_fmt)
+                # CONGELAR PAINÉIS (Célula F3 -> Fixa as duas primeiras linhas e as 5 primeiras colunas)
+                worksheet.freeze_panes(2, 5)
+
+                # ESCRITA DO CABEÇALHO DUPLO
                 worksheet.set_row_pixels(0, C_EXCEL['altura_cabecalho'])
+                worksheet.set_row_pixels(1, C_EXCEL['altura_cabecalho'])
                 
-                # Escrita de Linhas
+                # Linha 1 (Merged Cells) - COM SUPORTE A CORES E BORDAS DINÂMICAS DO JSON
+                col_idx = 0
+                for cell in cabecalho_cfg['linha1']:
+                    span = cell.get('span', 1)
+                    texto = cell.get('texto', '')
+                    
+                    # Puxa o estilo base padrão do cabeçalho
+                    propriedades_celula = {**f_base, **C_EXCEL['estilo_cabecalho'], 'valign': 'vcenter'}
+                    
+                    # Injeta propriedades extras vindas do JSON (ex: bg_color, font_color, border)
+                    for chave, valor in cell.items():
+                        if chave not in ['texto', 'span']:
+                            propriedades_celula[chave] = valor
+                            
+                    fmt_dinamico = workbook.add_format(propriedades_celula)
+
+                    if span > 1:
+                        worksheet.merge_range(0, col_idx, 0, col_idx + span - 1, texto, fmt_dinamico)
+                    else:
+                        worksheet.write(0, col_idx, texto, fmt_dinamico)
+                    col_idx += span
+
+                # Linha 2
+                h_fmt_linha2 = workbook.add_format({**f_base, **C_EXCEL['estilo_cabecalho'], 'valign': 'vcenter'})
+                for c_idx, texto in enumerate(cabecalho_cfg['linha2']):
+                    worksheet.write(1, c_idx, texto, h_fmt_linha2)
+                
+                # ESCRITA DOS DADOS
                 for i, row_data in df_final.iterrows():
-                    row_idx = i + 1
+                    row_idx = i + 2 # Começa na 3ª linha do Excel (índice 2)
                     level_key = f"l{CONFIG['cnae_estrutura'][i].get('level', 0)}"
                     
-                    # Colunas de hierarquia textual
                     for col in range(5):
                         worksheet.write_string(row_idx, col, str(row_data[f'Nível {col+1}']), fmt_hierarquia[f"{level_key}_text"])
 
-                    # Mapeamento de métricas e formatos
-                    data_cols_map = [
-                        ('Total Vínculos', 'int'), ('Remuneração Média', 'money'),
-                        ('Pct Homens', 'percent'), ('Pct Mulheres', 'percent'),
-                        ('Pct Branca', 'percent'), ('Pct Preta', 'percent'),
-                        ('Pct Parda', 'percent'), ('Pct Amarela', 'percent'),
-                        ('Pct Indigena', 'percent'), ('Pct Ignorado/NI', 'percent')
-                    ]
-
-                    # Colunas de métricas numéricas
-                    for j, (col_name, type_fmt) in enumerate(data_cols_map):
+                    for j, (col_name, type_fmt) in enumerate(DATA_COLS_MAP):
                         val = row_data[col_name]
                         target_fmt = fmt_hierarquia[f"{level_key}_{type_fmt}"]
                         
@@ -182,18 +309,15 @@ def salvar_relatorio_consolidado_excel(dict_relatorios: dict, caminho_arquivo: s
                             worksheet.write_number(row_idx, 5 + j, val, target_fmt)
 
         print(f"Planilha consolidada exportada com sucesso: {caminho_completo.name}")
-        
     except Exception as e:
         print(f"Erro ao salvar Excel consolidado: {e}")
 
 def gerar_tabela_hierarquica(df: pd.DataFrame) -> pd.DataFrame:
-    """Consolida os dados brutos em uma tabela hierárquica e a retorna (não salva em disco)."""
+    """Consolida os dados brutos numa tabela hierárquica completa em memória."""
     if df.empty: 
         return pd.DataFrame()
     
-    # Preparação de colunas limpas para agregações
     df_proc = df.copy().assign(
-        # DuckDB já tratou 'Remuneracao_Num', 'Genero_Raw', 'Raca_Raw', 'CNAE_F'
         Genero_Limpo = lambda x: x['Genero_Raw'].astype(str).str.strip().map(CONFIG['mapas']['genero']),
         Raca_Limpa = lambda x: x['Raca_Raw'].astype(str).str.strip().map(CONFIG['mapas']['raca']),
         CNAE_Classe_Limpo = lambda x: x['CNAE_F'].astype(str).str.slice(0, 5),
@@ -201,9 +325,10 @@ def gerar_tabela_hierarquica(df: pd.DataFrame) -> pd.DataFrame:
         CNAE_Divisao_Limpo = lambda x: x['CNAE_Classe_Limpo'].str.slice(0, 2)
     )
     
-    stats_cols = ['Remuneracao_Num', 'Genero_Limpo', 'Raca_Limpa']
+    # As colunas numéricas de apoio não precisam estar aqui, pois são lidas diretamente
+    # dentro da função calcular_metricas
+    stats_cols = df_proc.columns.tolist()
     
-    # Agrupamentos Estatísticos
     agg_classe = df_proc.groupby('CNAE_Classe_Limpo')[stats_cols].apply(calcular_metricas, include_groups=False).to_dict('index')
     agg_grupo = df_proc.groupby('CNAE_Grupo_Limpo')[stats_cols].apply(calcular_metricas, include_groups=False).to_dict('index')
     agg_divisao = df_proc.groupby('CNAE_Divisao_Limpo')[stats_cols].apply(calcular_metricas, include_groups=False).to_dict('index')
@@ -211,41 +336,28 @@ def gerar_tabela_hierarquica(df: pd.DataFrame) -> pd.DataFrame:
 
     tabela_final = []
     
-    # Montagem linha a linha conforme o esqueleto JSON
     for item in CONFIG['cnae_estrutura']:
-        # Uso de .get() para evitar KeyError se faltar 'level' ou 'clean_code'
         lvl = item.get('level', 0)
         code = item.get('clean_code', '')
         
-        # Recupera as métricas adequadas para o nível atual
-        m = {}
-        if lvl == 0:
-            m = agg_total
-        elif lvl == 1:
-            m = agg_divisao.get(code, {})
-        elif lvl == 2:
-            m = agg_grupo.get(code, {})
-        elif lvl == 3:
-            m = agg_classe.get(code, {})
+        if lvl == 0: m = agg_total
+        elif lvl == 1: m = agg_divisao.get(code, {})
+        elif lvl == 2: m = agg_grupo.get(code, {})
+        elif lvl == 3: m = agg_classe.get(code, {})
             
-        # Uso do método .get('titulo', '') e .get('code', '') em todas as validações
-        tabela_final.append({
+        linha_dict = {
             'Nível 1': item.get('titulo', '') if lvl == 0 else '', 
             'Nível 2': item.get('code', '') if lvl == 1 else '',
             'Nível 3': item.get('titulo', '') if lvl == 1 else (item.get('code', '') if lvl == 2 else ''),
             'Nível 4': item.get('titulo', '') if lvl == 2 else (item.get('code', '') if lvl == 3 else ''),
-            'Nível 5': item.get('titulo', '') if lvl == 3 else '',
-            'Total Vínculos': m.get('Total Vinculos'), 
-            'Remuneração Média': m.get('Remunacao Media'),
-            'Pct Homens': m.get('Pct Homens'), 
-            'Pct Mulheres': m.get('Pct Mulheres'),
-            'Pct Branca': m.get('Pct Branca'), 
-            'Pct Preta': m.get('Pct Preta'), 
-            'Pct Parda': m.get('Pct Parda'),
-            'Pct Amarela': m.get('Pct Amarela'), 
-            'Pct Indigena': m.get('Pct Indigena'), 
-            'Pct Ignorado/NI': m.get('Pct Ignorado/NI')
-        })
+            'Nível 5': item.get('titulo', '') if lvl == 3 else ''
+        }
+        
+        # Mapeia todas as métricas geradas para a linha
+        for col_nome, _ in DATA_COLS_MAP:
+            linha_dict[col_nome] = m.get(col_nome, '-')
+            
+        tabela_final.append(linha_dict)
         
     return pd.DataFrame(tabela_final)
 
@@ -260,7 +372,7 @@ class AppRAIS:
         self.df_municipios = df_municipios
         self.municipios_map = municipios_map
         
-        self.root.title("Extrator RAIS - Motor DuckDB Ultra-Rápido")
+        self.root.title("Extrator RAIS - Dashboards Avançados (DuckDB)")
         self.root.geometry("850x780")
         
         container = ttk.Frame(root, padding="25")
@@ -270,14 +382,12 @@ class AppRAIS:
         self.criar_interface(container)
 
     def criar_interface(self, parent):
-        # 1. UF
         ttk.Label(parent, text="1. UF:").grid(row=0, column=0, padx=5, pady=10, sticky="w")
         self.uf_var = tk.StringVar()
         self.uf_combo = ttk.Combobox(parent, textvariable=self.uf_var, state="readonly", values=self.ufs, width=45)
         self.uf_combo.grid(row=0, column=1, padx=5, pady=10, sticky="ew")
         self.uf_combo.bind("<<ComboboxSelected>>", self.on_uf_selected)
 
-        # 2. Município
         ttk.Label(parent, text="2. Município:").grid(row=1, column=0, padx=5, pady=10, sticky="w")
         self.mun_var = tk.StringVar()
         self.mun_combo = ttk.Combobox(parent, textvariable=self.mun_var, state="disabled", width=45)
@@ -285,7 +395,6 @@ class AppRAIS:
         
         ttk.Button(parent, text="Adicionar à Lista ⬇", command=self.add_item).grid(row=2, column=1, padx=5, pady=5, sticky="e")
 
-        # 3. Lista de Filtros
         ttk.Label(parent, text="3. Filtros Ativos:").grid(row=3, column=0, padx=5, pady=10, sticky="nw")
         list_frame = ttk.Frame(parent)
         list_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
@@ -299,8 +408,7 @@ class AppRAIS:
         ttk.Button(btn_box, text="Remover", command=self.remove_item).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_box, text="Limpar", command=self.clear_all).pack(side=tk.LEFT, padx=5)
 
-        # Execução
-        self.btn_run = ttk.Button(parent, text="EXTRAIR E GERAR RELATÓRIOS (DUCKDB)", command=self.process_start)
+        self.btn_run = ttk.Button(parent, text="EXTRAIR E GERAR RELATÓRIOS", command=self.process_start)
         self.btn_run.grid(row=6, column=0, columnspan=2, pady=25)
         
         self.lbl_status = ttk.Label(parent, text="Pronto para uso.", foreground="blue")
@@ -314,7 +422,6 @@ class AppRAIS:
     def add_item(self):
         m = self.mun_var.get()
         uf = self.uf_var.get()
-        # CORREÇÃO: Guardar a UF junto com o município na lista, garantindo a associação correta
         if m and uf:
             item_formatado = f"{uf} - {m}"
             if item_formatado not in self.listbox.get(0, tk.END):
@@ -331,12 +438,10 @@ class AppRAIS:
         self.listbox.delete(0, tk.END)
 
     def set_status(self, msg):
-        """Thread-safe update da interface gráfica."""
         self.root.after(0, lambda: self.lbl_status.config(text=msg))
 
     def process_start(self):
         itens_selecionados = self.listbox.get(0, tk.END)
-        
         if not itens_selecionados:
             messagebox.showwarning("Atenção", "Inclua pelo menos um município na lista para filtrar.")
             return
@@ -344,7 +449,6 @@ class AppRAIS:
         self.btn_run.config(state="disabled")
         self.root.config(cursor="watch")
         
-        # CORREÇÃO: Transformamos a lista de strings "UF - MUN" em um dicionário agrupado
         cidades_por_uf = {}
         for item in itens_selecionados:
             uf, mun = item.split(" - ", 1)
@@ -352,19 +456,28 @@ class AppRAIS:
                 cidades_por_uf[uf] = []
             cidades_por_uf[uf].append(mun)
             
-        # Desvia o trabalho pesado para uma thread secundária
         threading.Thread(target=self.engine_duckdb, args=(cidades_por_uf,), daemon=True).start()
 
     def engine_duckdb(self, cidades_por_uf):
-        """Motor DuckDB que processa múltiplos arquivos Parquet dinamicamente."""
+        """Motor DuckDB adaptado para extrair novas colunas RAIS com nomes exatos da base."""
         try:
-            self.set_status("Iniciando motor DuckDB...")
+            self.set_status("Iniciando extração profunda no DuckDB...")
             con = duckdb.connect()
             cnae_list = list(CONFIG['cnae_map'].values())
             cnae_formatados = ', '.join([f"'{c}'" for c in cnae_list])
             
-            # CORREÇÃO: Agrupa UFs pelo arquivo Parquet correspondente
-            # Isso evita ler o mesmo arquivo de 20GB duas vezes se pedirem cidades de BA e PE
+            # Resgate dos nomes EXATOS das colunas com base no esquema da RAIS passado
+            c_idade = C_COLS.get('idade', 'Idade')
+            c_tempo = C_COLS.get('tempo_emprego', 'Tempo Emprego')
+            c_esc = C_COLS.get('escolaridade', 'Escolaridade Após 2005 - Código')
+            c_afast1 = C_COLS.get('causa_afastamento_1', 'Causa Afastamento 1 - Código')
+            c_afast2 = C_COLS.get('causa_afastamento_2', 'Causa Afastamento 2 - Código')
+            c_afast3 = C_COLS.get('causa_afastamento_3', 'Causa Afastamento 3 - Código')
+            c_dias = C_COLS.get('qtd_dias_afastamento', 'Qtd Dias Afastamento')
+            c_jor = C_COLS.get('jornada', 'Qtd Hora Contr')
+            c_int = C_COLS.get('ind_intermitente', 'Ind Trabalho Intermitente - Código')
+            c_par = C_COLS.get('ind_parcial', 'Ind Trabalho Parcial - Código')
+            
             arquivos_alvo = {}
             for uf, muns in cidades_por_uf.items():
                 arquivo_p = MAPA_ARQUIVOS_UF.get(uf)
@@ -376,27 +489,19 @@ class AppRAIS:
 
             summary = "Resultados da Extração:\n\n"
             stack_regional = []
-            relatorios_para_excel = {}  # Dicionário para armazenar as abas da planilha
+            relatorios_para_excel = {}  
 
-            # Itera sobre cada arquivo Parquet necessário
             for arquivo_p, ufs_dict in arquivos_alvo.items():
                 path_f = PASTA_DADOS / arquivo_p
 
-                if not path_f.exists():
-                    summary += f"⚠️ Erro: Arquivo {path_f.name} não encontrado.\n"
+                if not path_f.exists() or path_f.stat().st_size < 1048576:
+                    summary += f"⚠️ Erro: Arquivo {path_f.name} ausente ou corrompido.\n"
                     continue
 
-                if path_f.stat().st_size < 1048576:
-                    summary += f"⚠️ Erro: Arquivo {path_f.name} parece corrompido (tamanho muito pequeno).\n"
-                    continue
-
-                # Preparar os códigos IBGE desta rodada
                 map_ibge = {}
                 for uf, muns in ufs_dict.items():
                     for nome in muns:
                         cod_completo = str(self.municipios_map.get((uf, nome)))
-                        # CORREÇÃO CRUCIAL: A RAIS usa 6 dígitos. O IBGE padrão tem 7. 
-                        # Aqui cortamos para 6 dígitos para o cruzamento bater com sucesso!
                         cod_6dig = re.sub(r'\D', '', cod_completo)[:6]
                         map_ibge[cod_6dig] = f"{uf} - {nome}"
 
@@ -411,7 +516,16 @@ class AppRAIS:
                     CAST(REPLACE(CAST("{C_COLS['remuneracao']}" AS VARCHAR), ',', '.') AS DOUBLE) as Remuneracao_Num,
                     CAST("{C_COLS['genero']}" AS VARCHAR) as Genero_Raw,
                     CAST("{C_COLS['raca']}" AS VARCHAR) as Raca_Raw,
-                    *
+                    CAST("{c_idade}" AS DOUBLE) as Idade_Num,
+                    CAST("{c_tempo}" AS DOUBLE) as Tempo_Emprego_Num,
+                    CAST("{c_esc}" AS DOUBLE) as Escolaridade_Num,
+                    CAST("{c_afast1}" AS VARCHAR) as Causa_Afast_1,
+                    CAST("{c_afast2}" AS VARCHAR) as Causa_Afast_2,
+                    CAST("{c_afast3}" AS VARCHAR) as Causa_Afast_3,
+                    CAST("{c_dias}" AS DOUBLE) as Dias_Afast_Num,
+                    CAST(REPLACE(CAST("{c_jor}" AS VARCHAR), ',', '.') AS DOUBLE) as Jornada_Num,
+                    CAST("{c_int}" AS VARCHAR) as Ind_Intermitente,
+                    CAST("{c_par}" AS VARCHAR) as Ind_Parcial
                 FROM '{caminho_parquet}'
                 WHERE 
                     (REGEXP_REPLACE(CAST("{C_COLS['municipio']}" AS VARCHAR), '[^0-9]', '', 'g') IN ({cods_formatados})
@@ -420,7 +534,7 @@ class AppRAIS:
                     AND SUBSTR(REGEXP_REPLACE(CAST("{C_COLS['cnae_subclasse']}" AS VARCHAR), '[^0-9]', '', 'g'), 1, 5) IN ({cnae_formatados})
                 """
 
-                self.set_status(f"Consultando DuckDB na base {arquivo_p}...")
+                self.set_status(f"Extraindo variáveis da base {arquivo_p}...")
                 df_res = con.execute(sql).df()
                 
                 if df_res.empty:
@@ -428,50 +542,41 @@ class AppRAIS:
                         summary += f"✖ {nome_exibicao}: Nenhum vínculo encontrado.\n"
                     continue
 
-                self.set_status(f"Processando resultados de {arquivo_p}...")
+                self.set_status(f"Calculando painéis para {arquivo_p}...")
                 
-                # Separa o DataFrame consolidado município por município
                 for cod, nome_exibicao in map_ibge.items():
                     sub = df_res[(df_res['M1'] == cod) | (df_res['M2'] == cod)].copy()
                     
                     if not sub.empty:
                         sub.loc[:, C_COLS['cnae_classe']] = sub['CNAE_F']
+                        aba_nome = re.sub(r'[\\/*?:\[\]]', '', nome_exibicao)[:31]
                         
-                        # Gera o nome de arquivo seguro: ex 'SP_Limeira.csv'
-                        fname = f"{nome_exibicao.replace(' - ', '_')}"
-                        fname = re.sub(r'[^\w\s]', '', fname).replace(' ', '_')
-                        
-                        # Gera a tabela relacional e guarda no dicionário para as abas do Excel
-                        aba_nome = re.sub(r'[\\/*?:\[\]]', '', nome_exibicao)[:31] # Excel limita a 31 chars
                         relatorios_para_excel[aba_nome] = gerar_tabela_hierarquica(sub)
-                        
                         stack_regional.append(sub)
-                        summary += f"✔ {nome_exibicao}: {len(sub):,} registros\n"
+                        summary += f"✔ {nome_exibicao}: {len(sub):,} registros analisados.\n"
                     else:
                         summary += f"✖ {nome_exibicao}: Nenhum registro retornado\n"
 
-            # Se mais de um município foi buscado no total, gera o relatório regional
             if len(stack_regional) > 1:
-                self.set_status("Gerando Relatório Regional...")
+                self.set_status("Consolidando Região Inteira...")
                 df_regional = pd.concat(stack_regional, ignore_index=True)
                 
                 aba_regional = {"Regional": gerar_tabela_hierarquica(df_regional)}
-                # Adiciona o regional na primeira posição (como primeira aba)
                 relatorios_para_excel = {**aba_regional, **relatorios_para_excel}
-                
-                summary += f"\n✔ Consolidado Regional gerado ({len(df_regional):,} vínculos no total)."
+                summary += f"\n✔ Aba Regional criada com {len(df_regional):,} vínculos globais."
 
             if relatorios_para_excel:
-                self.set_status("Criando planilha Excel consolidada...")
+                self.set_status("Escrevendo Excel Profissional...")
                 timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-                nome_arquivo_final = f"Relatorios_RAIS_Consolidado_{timestamp}.xlsx"
+                # ALTERAÇÃO: Novo nome de ficheiro conforme solicitado
+                nome_arquivo_final = f"Relatório Ramo Financeiro_{timestamp}.xlsx"
                 salvar_relatorio_consolidado_excel(relatorios_para_excel, nome_arquivo_final)
 
-            self.set_status("Finalizado.")
+            self.set_status("Finalizado com Excel gerado.")
             self.root.after(0, lambda s=summary: messagebox.showinfo("Extração Concluída", s))
 
         except Exception as err:
-            self.set_status("Erro no motor DuckDB.")
+            self.set_status("Erro durante análise de dados.")
             mensagem_erro = f"Falha na filtragem:\n{err}\n\nTraceback:\n{traceback.format_exc()}"
             self.root.after(0, lambda msg=mensagem_erro: messagebox.showerror("Erro Crítico", msg))
         finally:
@@ -484,11 +589,9 @@ class AppRAIS:
 
 if __name__ == "__main__":
     try:
-        # Lê o arquivo de Mapeamento de IBGE
         df_ibge = pd.read_csv(ARQUIVO_MUNICIPIOS, sep=';', dtype=str, encoding='utf-8')
         df_ibge.columns = [c.strip() for c in df_ibge.columns]
         
-        # Inicia o App
         main_root = tk.Tk()
         ufs_disponiveis = sorted(df_ibge['UF'].unique())
         mapa_mun = df_ibge.set_index(['UF', 'Nome Municipio'])['Codigo Municipio'].to_dict()
