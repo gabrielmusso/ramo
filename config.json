@@ -21,20 +21,20 @@
       "inteiro": "#,##0"
     },
     "largura_colunas_pixels": {
-      "A": 10,
-      "B": 50,
-      "C": 50,
-      "D": 50,
-      "E": 650,
-      "F": 75,
-      "G": 110,
-      "H_O": 75
+      "A": 17,
+      "B": 17,
+      "C": 24,
+      "D": 40,
+      "E": 600,
+      "F": 80,
+      "G": 80,
+      "H_AV": 80
     },
     "estilo_cabecalho": {
       "bold": true,
       "align": "center",
       "bottom": 1,
-      "font_size": 10,
+      "font_size": 9.5,
       "text_wrap": true
     },
     "estilos_niveis": {
@@ -44,15 +44,136 @@
       "l3": {"font_size": 9, "bold": false, "bottom": 4}
     }
   },
+  "correspondentes_excel_config": {
+    "fonte_padrao": "Montserrat",
+    "font_size_corpo": 9,
+    "margens": {
+      "left": 0.5,
+      "right": 0.5,
+      "top": 0.75,
+      "bottom": 0.75
+    },
+    "estilo_cabecalho": {
+      "bold": true,
+      "align": "center",
+      "font_size": 10,
+      "bg_color": "#D3D3D3",
+      "text_wrap": true
+    },
+    "padrao_exclusao_nomes": "ENERGIA|CAMINH[ÕO]ES|ENERGIA|VE[ÍI]CULOS|AUTOM[ÓO]VEIS|AUTO|MOTOS|MOTORS| CAR |AUTOMOTORES|M[ÓO]VEIS|COMERCIAL|LOJAS|DISTRIBUIDORA|EMPREENDIMENTOS|SOLAR|DROGARIA|FARM[ÁA]CIA|[ÓO]TICA",
+    "colunas_saida": [
+      {
+        "nome": "Nome do Correspondente",
+        "origem_tipo": "index",
+        "origem_val": 5,
+        "largura": 40
+      },
+      {
+        "nome": "CNPJ do Correspondente",
+        "origem_tipo": "cnpj_corresp",
+        "origem_val": [2, 3, 4],
+        "largura": 18
+      },
+      {
+        "nome": "Nome da Contratante",
+        "origem_tipo": "agrupado",
+        "origem_val": 1,
+        "largura": 40
+      },
+      {
+        "nome": "CNPJ da Contratante",
+        "origem_tipo": "agrupado",
+        "origem_val": 0,
+        "largura": 15
+      },
+      {
+        "nome": "Município da Instalação",
+        "origem_tipo": "index",
+        "origem_val": 8,
+        "largura": 18
+      },
+      {
+        "nome": "UF",
+        "origem_tipo": "index",
+        "origem_val": 9,
+        "largura": 4
+      },
+      {
+        "nome": "Endereço",
+        "origem_tipo": "endereco",
+        "origem_val": [10, 12, 11, 13, 8, 9, 14],
+        "largura": 60
+      },
+      {
+        "nome": "Inc I: Recepção e encaminhamento de propostas de abertura de contas",
+        "origem_tipo": "index",
+        "origem_val": 15,
+        "largura": 16,
+        "align": "center"
+      },
+      {
+        "nome": "Inc II: Recebimentos, pagamentos e transferências de contas de clientes",
+        "origem_tipo": "index",
+        "origem_val": 16,
+        "largura": 16,
+        "align": "center"
+      },
+      {
+        "nome": "Inc III: Recebimentos e pagamentos de qualquer natureza, como serviços públicos",
+        "origem_tipo": "index",
+        "origem_val": 17,
+        "largura": 16,
+        "align": "center"
+      },
+      {
+        "nome": "Inc IV: Execução de ativa e passiva de ordens de pagamento",
+        "origem_tipo": "index",
+        "origem_val": 18,
+        "largura": 16,
+        "align": "center"
+      },
+      {
+        "nome": "Inc V: Recepção e encaminhamento de propostas de operações de crédito e de arrendamento mercantil",
+        "origem_tipo": "index",
+        "origem_val": 19,
+        "largura": 16,
+        "align": "center"
+      },
+      {
+        "nome": "Inc VI: Recebimentos e pagamentos relacionados a letras de câmbio",
+        "origem_tipo": "index",
+        "origem_val": 20,
+        "largura": 16,
+        "align": "center"
+      },
+      {
+        "nome": "Inc VIII: Recepção e encaminhamento de propostas de fornecimento de cartões de crédito",
+        "origem_tipo": "index",
+        "origem_val": 21,
+        "largura": 16,
+        "align": "center"
+      }
+    ]
+  },
   "colunas_alvo": {
     "municipio": "Município - Código",
     "municipio_trab": "Município Trab - Código",
     "cnae_classe": "CNAE 2.0 Classe - Código",
     "cnae_subclasse": "CNAE 2.0 Subclasse - Código",
     "filtro_vinculo": "Ind Vínculo Ativo 31/12 - Código",
-    "remuneracao": "Vl Rem Dezembro Nom",
+    "remuneracao": "Vl Rem Média Nom",
     "genero": "Sexo - Código",
-    "raca": "Raça Cor - Código"
+    "raca": "Raça Cor - Código",
+    "idade": "Idade",
+    "tempo_emprego": "Tempo Emprego",
+    "escolaridade": "Escolaridade Após 2005 - Código",
+    "causa_afastamento_1": "Causa Afastamento 1 - Código",
+    "causa_afastamento_2": "Causa Afastamento 2 - Código",
+    "causa_afastamento_3": "Causa Afastamento 3 - Código",
+    "qtd_dias_afastamento": "Qtd Dias Afastamento",
+    "jornada": "Qtd Hora Contr",
+    "ind_intermitente": "Ind Trabalho Intermitente - Código",
+    "ind_parcial": "Ind Trabalho Parcial - Código"
   },
   "mapas": {
     "genero": {
@@ -156,41 +277,40 @@
     {"level": 3, "code": "66.30-4", "titulo": "Atividades de administração de fundos por contrato ou comissão", "clean_code": "66304"}
   ],
   "regioes_arquivos": {
-    "RAIS_VINC_PUB_NORTE.COMT": ["AC", "Acre", "AP", "Amapá", "AM", "Amazonas", "PA", "Pará", "RO", "Rondônia", "RR", "Roraima", "TO", "Tocantins"],
-    "RAIS_VINC_PUB_NORDESTE.COMT": ["AL", "Alagoas", "BA", "Bahia", "CE", "Ceará", "MA", "Maranhão", "PB", "Paraíba", "PE", "Pernambuco", "PI", "Piauí", "RN", "Rio Grande do Norte", "SE", "Sergipe"],
-    "RAIS_VINC_PUB_CENTRO_OESTE.COMT": ["DF", "Distrito Federal", "GO", "Goiás", "MT", "Mato Grosso", "MS", "Mato Grosso do Sul"],
-    "RAIS_VINC_PUB_MG_ES_RJ.COMT": ["ES", "Espírito Santo", "MG", "Minas Gerais", "RJ", "Rio de Janeiro"],
-    "RAIS_VINC_PUB_SP.COMT": ["SP", "São Paulo"],
-    "RAIS_VINC_PUB_SUL.COMT": ["PR", "Paraná", "RS", "Rio Grande do Sul", "SC", "Santa Catarina"]
+    "RAIS_VINC_PUB_NORTE.parquet": ["AC", "Acre", "AP", "Amapá", "AM", "Amazonas", "PA", "Pará", "RO", "Rondônia", "RR", "Roraima", "TO", "Tocantins"],
+    "RAIS_VINC_PUB_NORDESTE.parquet": ["AL", "Alagoas", "BA", "Bahia", "CE", "Ceará", "MA", "Maranhão", "PB", "Paraíba", "PE", "Pernambuco", "PI", "Piauí", "RN", "Rio Grande do Norte", "SE", "Sergipe"],
+    "RAIS_VINC_PUB_CENTRO_OESTE.parquet": ["DF", "Distrito Federal", "GO", "Goiás", "MT", "Mato Grosso", "MS", "Mato Grosso do Sul"],
+    "RAIS_VINC_PUB_MG_ES_RJ.parquet": ["ES", "Espírito Santo", "MG", "Minas Gerais", "RJ", "Rio de Janeiro"],
+    "RAIS_VINC_PUB_SP.parquet": ["SP", "São Paulo"],
+    "RAIS_VINC_PUB_SUL.parquet": ["PR", "Paraná", "RS", "Rio Grande do Sul", "SC", "Santa Catarina"]
   },
-  "postos_excel_config": {
-    "fonte_padrao": "Montserrat",
-    "font_size_corpo": 9,
-    "margens": {
-      "left": 0.4,
-      "right": 0.4,
-      "top": 0.6,
-      "bottom": 0.6
-    },
-    "estilo_cabecalho": {
-      "bold": true,
-      "align": "center",
-      "bg_color": "#D3D3D3",
-      "font_size": 10,
-      "bottom": 1,
-      "text_wrap": true
-    },
-    "largura_colunas_especificas": {
-      "CNPJ": 9,
-      "Instituição": 80,
-      "Segmento": 18,
-      "Endereço": 30,
-      "Número": 8,
-      "Bairro": 20,
-      "Município": 20,
-      "UF": 5,
-      "CEP": 10,
-      "Default": 18
-    }
+  "cabecalho_duplo": {
+    "linha1": [
+      {"texto": "", "span": 5, "bg_color": "#F2F2F2"},
+      {"texto": "", "span": 1, "bg_color": "#D9D9D9"},
+      {"texto": "", "span": 1, "bg_color": "#F2F2F2"},
+      {"texto": "Gênero", "span": 2, "bg_color": "#D9D9D9"},
+      {"texto": "Raça", "span": 6, "bg_color": "#F2F2F2"},
+      {"texto": "Faixa Etária", "span": 6, "bg_color": "#D9D9D9"},
+      {"texto": "Tempo no Emprego", "span": 6, "bg_color": "#F2F2F2"},
+      {"texto": "Escolaridade", "span": 6, "bg_color": "#D9D9D9"},
+      {"texto": "Afastamentos", "span": 10, "bg_color": "#F2F2F2"},
+      {"texto": "Jornada Contratada", "span": 3, "bg_color": "#D9D9D9"},
+      {"texto": "Modalidade", "span": 2, "bg_color": "#F2F2F2"}
+    ],
+    "linha2": [
+      "", "", "", "", "",
+      "Vínculos", "Remuneração Média",
+      "Homens", "Mulheres",
+      "Branca", "Preta", "Parda", "Amarela", "Indígena", "NI",
+      "Até 18", "18-29", "30-39", "40-49", "50-65", "Acima de 65",
+      "Até 6 meses", "De 6 Meses a 1 Ano", "De 1 a 2 Anos", "De 2 a 5 Anos", "De 5 a 10 Anos", "Acima de 10 Anos",
+      "Até Fundamental Completo", "Médio Incompleto", "Médio Completo", "Superior Incompleto", "Superior Completo", "Pós-Graduação",
+      "Nenhum Afastamento", "Um Afastamento ", "Acidente ou Doença Rel. Trabalho", "Média de Dias Não Trabalhados", 
+      "Dois Afastamentos", "Acidente ou Doença Rel. Trabalho", "Média de Dias Não Trabalhados", 
+      "Três ou Mais Afastamentos", "Acidente ou Doença Rel. Trabalho", "Média de Dias Não Trabalhados",
+      "Até 30H", "De 30H a 40H", "Acima de 40H",
+      "Trabalho Intermitente", "Trabalho Parcial"
+    ]
   }
 }
